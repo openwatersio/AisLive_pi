@@ -3,7 +3,8 @@
 # License:      GPLv3+
 # Copyright (c) 2021 Alec Leamas
 #
-# Find and link general libraries to use: gettext, wxWidgets and OpenGL
+# Find and link general libraries to use: gettext, wxWidgets, OpenGL,
+# and the vendored IXWebSocket (TLS via mbedtls, replaces OpenSSL).
 # ~~~
 
 # This program is free software; you can redistribute it and/or modify
@@ -80,7 +81,58 @@ include(${wxWidgets_USE_FILE})
 target_link_libraries(${PACKAGE_NAME} ${wxWidgets_LIBRARIES})
 
 #
-# OpenSSL (TLS transport for the AIS websocket client
+# --- BEGIN CHANGED SECTION: OpenSSL -> vendored IXWebSocket -------------
+# Previously this file called find_package(OpenSSL REQUIRED) and linked
+# OpenSSL::SSL / OpenSSL::Crypto. We now vendor IXWebSocket from
+# third-party/IXWebSocket and let it bring its own TLS backend (mbedtls,
+# also vendored) -- no system OpenSSL is required on the user's PC.
 #
-find_package(OpenSSL REQUIRED)
-target_link_libraries(${PACKAGE_NAME} OpenSSL::SSL OpenSSL::Crypto)
+# Cache variable names and the static-link / PIC dance are taken verbatim
+# from opencpn-radar-pi/mayara_pi (top-level CMakeLists.txt, "mayara-server
+# client networking" block) so the two plugins stay in sync.
+# AisLive talks to wss://aisstream.io so TLS must stay ON; the choice
+# between USE_MBED_TLS / USE_OPEN_SSL / USE_SECURE_TRANSPORT / USE_LIBRE_SSL
+# is left to the mayara_pi convention by setting USE_MBED_TLS=ON (no
+# preinstalled dependency on any host platform).
+#
+# AisLive_pi TLS backend (vendored IXWebSocket + vendored mbedtls):
+#   USE_TLS         = ON     (wss://aisstream.io requires TLS)
+#   USE_MBED_TLS    = ON     (vendored, zero preinstalled deps)
+#   USE_OPEN_SSL    = unset  (would re-introduce the system OpenSSL dep
+#                             we are removing; explicitly NOT set here)
+#   USE_ZLIB        = ON     (permessage-deflate; OFF on WIN32 because
+#                             MSVC has no system zlib find_package works
+#                             for, mirroring mayara_pi)
+#   IXWEBSOCKET_INSTALL = OFF (we never install ixwebsocket; it is private)
+#   BUILD_SHARED_LIBS   = OFF (force static; PIC so it links into the
+#                             plugin shared object; FE2 sets BUILD_SHARED_LIBS
+#                             globally so we save/restore it around
+#                             add_subdirectory, exactly like mayara_pi)
+# ------------------------------------------------------------------------
+set(USE_TLS ON CACHE BOOL "" FORCE)
+set(USE_MBED_TLS ON CACHE BOOL "" FORCE)
+# zlib enables permessage-deflate; it's a system library on macOS/Linux but
+# not on Windows/MSVC (find_package(ZLIB) would fail the configure); drop it
+# there. WebSocket compression is negotiated, so uncompressed frames still
+# work -- just a little more bandwidth on Windows.
+if (WIN32)
+  set(USE_ZLIB OFF CACHE BOOL "" FORCE)
+else ()
+  set(USE_ZLIB ON CACHE BOOL "" FORCE)
+endif ()
+set(IXWEBSOCKET_INSTALL OFF CACHE BOOL "" FORCE)
+# Build IXWebSocket as a STATIC lib linked into the plugin (FE2 sets
+# BUILD_SHARED_LIBS globally, which would otherwise emit a separate dylib the
+# plugin can't find at load time). PIC so it links into our shared object.
+set(_aislive_saved_shared ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+add_subdirectory(${PROJECT_SOURCE_DIR}/third-party/IXWebSocket)
+set(BUILD_SHARED_LIBS ${_aislive_saved_shared})
+target_link_libraries(${PACKAGE_NAME} ixwebsocket)
+target_include_directories(
+  ${PACKAGE_NAME}
+  PRIVATE
+    ${PROJECT_SOURCE_DIR}/third-party/IXWebSocket
+)
+# --- END CHANGED SECTION: OpenSSL -> vendored IXWebSocket ---------------

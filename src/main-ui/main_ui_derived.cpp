@@ -8,9 +8,18 @@
 ////////////////////////////
 /// Class Initialization ///
 ////////////////////////////
-DialogMainGui::DialogMainGui(wxWindow* parent, wxWindowID id, const wxString& title, const wxPoint& pos, const wxSize& size, long style) : DialogMainGuiBase( parent )
-{
 
+DialogMainGui::DialogMainGui(
+    wxWindow* parent,
+    wxWindowID id,
+    const wxString& title,
+    const wxPoint& pos,
+    const wxSize& size,
+    long style)
+    : DialogMainGuiBase(parent)
+{
+    // Keep the UI in sync with the initial stream state.
+    m_staticText_streamState->SetLabel(_("Stopped"));
 }
 
 DialogMainGui::~DialogMainGui()
@@ -19,41 +28,39 @@ DialogMainGui::~DialogMainGui()
 }
 
 
-
 /////////////////////
 /// Input updates ///
 /////////////////////
+
 void DialogMainGui::updateSearchPosition(double lat, double lon)
 {
-    //Update search position
     m_searchLatitude = lat;
     m_searchLongitude = lon;
 
-    //Update labels
     const wxString latDir = lat >= 0.0 ? "N" : "S";
     const wxString lonDir = lon >= 0.0 ? "E" : "W";
 
     m_staticText_searchLatitude->SetLabel(
-        wxString::Format("%.6f°%s", std::abs(lat), latDir)
-        );
+        wxString::Format("%.6f°%s", std::abs(lat), latDir));
 
     m_staticText_searchLongitude->SetLabel(
-        wxString::Format("%.6f°%s", std::abs(lon), lonDir)
-        );
+        wxString::Format("%.6f°%s", std::abs(lon), lonDir));
 
-    //Refresh stream with updated search location
+    // Only restart an already-running stream.
     RestartAisStream();
 }
 
 void DialogMainGui::updateSearchBoxSize(double degrees)
 {
-    m_slider_searchBoxSize->SetValue(degrees);
-
     m_searchBoxSize = degrees;
-    m_staticText_searchBoxSize->SetLabel(
-        wxString::Format("%.0f° x %.0f°", degrees, degrees)
-        );
 
+    m_slider_searchBoxSize->SetValue(
+        static_cast<int>(degrees));
+
+    m_staticText_searchBoxSize->SetLabel(
+        wxString::Format("%.0f° x %.0f°", degrees, degrees));
+
+    // Only restart an already-running stream.
     RestartAisStream();
 }
 
@@ -71,26 +78,27 @@ void DialogMainGui::updateBoatPosition(double lat, double lon)
 }
 
 
-
 ///////////////
 /// Getters ///
 ///////////////
+
 double DialogMainGui::getSearchBoxSize()
 {
     return m_searchBoxSize;
 }
 
 
-
 /////////////////
 /// UI events ///
 /////////////////
+
 void DialogMainGui::OnClose(wxCloseEvent& event)
 {
+    StopAisStream();
+
     if (plugin)
     {
         plugin->OnGuiClosed();
-
     }
 }
 
@@ -106,33 +114,46 @@ void DialogMainGui::OnButtonClick_stopStream(wxCommandEvent& event)
 
 void DialogMainGui::OnScroll_UpdateSearchBoxSize(wxScrollEvent& event)
 {
-    double degrees = m_slider_searchBoxSize->GetValue();
+    const double degrees =
+        static_cast<double>(m_slider_searchBoxSize->GetValue());
+
     updateSearchBoxSize(degrees);
 }
-
 
 
 ////////////////////
 /// AIS streaming ///
 ////////////////////
+
 void DialogMainGui::StartAisStream()
 {
     if (m_aisStream.IsStreaming())
     {
-        return; // already running
+        return;
     }
 
-    // NOTE: this callback runs on AisStreamClient's background thread, not
-    // the GUI thread - same as the previous implementation. If
-    // plugin->sendNmeaSentence() or anything downstream of it ever touches
-    // wx widgets directly, it should marshal back via wxTheApp->CallAfter().
-    m_aisStream.Start(m_searchLatitude, m_searchLongitude, m_searchBoxSize,
+    m_aisStream.Start(
+        m_searchLatitude,
+        m_searchLongitude,
+        m_searchBoxSize,
+
         [this](const wxString& sentence)
         {
-            if (plugin)
-            {
-                plugin->sendNmeaSentence(sentence);
-            }
+            // AisStreamClient invokes this callback from its websocket
+            // worker thread. Never directly access wxWidgets from there.
+            this->CallAfter(
+                [this, sentence]()
+                {
+                    if (!m_aisStream.IsStreaming())
+                    {
+                        return;
+                    }
+
+                    if (plugin)
+                    {
+                        plugin->sendNmeaSentence(sentence);
+                    }
+                });
         });
 
     m_staticText_streamState->SetLabel(_("Running"));
@@ -142,10 +163,12 @@ void DialogMainGui::StopAisStream()
 {
     if (!m_aisStream.IsStreaming())
     {
+        m_staticText_streamState->SetLabel(_("Stopped"));
         return;
     }
 
     m_aisStream.Stop();
+
     m_staticText_streamState->SetLabel(_("Stopped"));
 }
 
@@ -156,12 +179,29 @@ void DialogMainGui::RestartAisStream()
         return;
     }
 
-    m_aisStream.Restart(m_searchLatitude, m_searchLongitude, m_searchBoxSize,
+    m_aisStream.Restart(
+        m_searchLatitude,
+        m_searchLongitude,
+        m_searchBoxSize,
+
         [this](const wxString& sentence)
         {
-            if (plugin)
-            {
-                plugin->sendNmeaSentence(sentence);
-            }
+            // Callback originates from the IXWebSocket worker thread.
+            this->CallAfter(
+                [this, sentence]()
+                {
+                    if (!m_aisStream.IsStreaming())
+                    {
+                        return;
+                    }
+
+                    if (plugin)
+                    {
+                        plugin->sendNmeaSentence(sentence);
+                    }
+                });
         });
+
+    m_staticText_streamState->SetLabel(_("Running"));
 }
+
