@@ -1,3 +1,6 @@
 [submodule "opencpn-libs"]
 	path = opencpn-libs
 	url = https://github.com/OpenCPN/opencpn-libs.git
+[submodule "third-party/IXWebSocket"]
+	path = third-party/IXWebSocket
+	url = https://github.com/machinezone/IXWebSocket.git
